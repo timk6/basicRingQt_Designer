@@ -1,0 +1,885 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>basicRingQt_Starter</title>
+<style>
+  body {
+    height: 100vh;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f0f2f5;
+    font-family: system-ui, Arial, sans-serif;
+  }
+  
+  .panel {
+    text-align: center;
+    background: white;
+    padding: 12px;
+    border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  }
+  canvas { background: #222; display:block; margin: 8px auto; border-radius:4px; }
+  .controls { display:flex; gap:0px; justify-content:center; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
+  button { padding:6px 10px; cursor:pointer; }
+  #out { width: 100%; height: 160px; margin-top:8px; font-family: monospace; }
+  #tooltip {
+    position: fixed;
+    background: rgba(0,0,0,0.86);
+    color: #fff;
+    padding: 6px 8px;
+    font-size: 12px;
+    border-radius: 6px;
+    pointer-events: none;
+    transform: translate(10px, 10px);
+    display: none;
+    z-index: 1000;
+    white-space: nowrap;
+  }
+  input.canvas-edit {
+    position: absolute;
+    z-index: 1001;
+    font: 12px system-ui, Arial;
+    padding: 4px 6px;
+    border-radius: 4px;
+    border: 1px solid #888;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .toggle-label { font-size: 13px; color:#222; display:flex; gap:6px; align-items:center; }
+</style>
+</head>
+<body>
+
+<div class="panel" style="width:920px;">
+  <h3 style="margin:150px 0 8px 0;"><big><big><big><big><span style="font-weight: bold;">basicRingQt_Designer</span><br
+style="font-weight: bold;">
+</big></big></big></big></h3>
+
+  <div class="controls">
+    <button id="simWinBtn" title="Draw a main window (click+drag)">Draw ringQt_Window</button>
+    <button id="simColorBtn" title="Change the selected window's color">Color of ringQt_Window</button>
+
+    <button id="simBtnBtn" title="Basic design qWidgets eg buttons, qlabels, etc">Draw ringQt_qWidgets</button>
+    <button id="simBtnColorBtn" title="Change the selected qWidget color">Color of qWidgets</button>
+
+    <button id="addChildBtn" title="Add a child window, DRAG TO MOVE THEM TO DIFFERENT POSITIONS">Add Child Window</button>
+    <button id="recordBtn" title="get code of all the qWidgets ">Generate</button>
+
+    <!-- NEW: toggle for plus buttons -->
+    <label class="toggle-label" title="Toggle all '+' add-buttons on/off">
+      <input type="checkbox" id="togglePlus" checked />
+      Show + buttons
+    </label>
+  </div>
+
+  <canvas id="stage" width="800" height="480"></canvas>
+  
+     <button style="background-color: lightblue; font-weight: bold; color: black;" id="copyButton" onclick="copyText()">Copy</button>
+	
+    <button style="background-color: lightblue; font-weight: bold; color: black;" 
+        onclick="document.getElementById('recordBtn').click()">
+    Generate Code
+</button>
+
+	
+	 <div> 
+  <textarea id="out" readonly></textarea>
+   </div>
+  
+</div>
+
+<input id="colorPickerWin" type="color" style="display:none"/>
+<input id="colorPickerBtn" type="color" style="display:none"/>
+<div id="tooltip"></div>
+
+<script>
+(function(){
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const out = document.getElementById('out');
+  const tooltip = document.getElementById('tooltip');
+
+  const simWinBtn = document.getElementById('simWinBtn');
+  const simColorBtn = document.getElementById('simColorBtn');
+  const simBtnBtn = document.getElementById('simBtnBtn');
+  const simBtnColorBtn = document.getElementById('simBtnColorBtn');
+  const addChildBtn = document.getElementById('addChildBtn');
+  const recordBtn = document.getElementById('recordBtn');
+  const togglePlusInput = document.getElementById('togglePlus');
+
+  const colorPickerWin = document.getElementById('colorPickerWin');
+  const colorPickerBtn = document.getElementById('colorPickerBtn');
+
+  // constants
+  const TITLE_BAR = 28;
+  const MENUBAR_HEIGHT = 26;
+  const ITEM_H = 26;
+  const ITEM_W = 160;
+  const SUBMENU_OFFSET = 8; // gap between parent dropdown and submenu
+  const EDGE_T = 7;
+  const MIN_WH = 30;
+
+  // state
+  let plusesEnabled = togglePlusInput.checked; // NEW: central toggle state
+  let mode = 'idle', drawing=false, dragging=false, resizing=false;
+  let startAbs = {x:0,y:0}, dragOffset = {x:0,y:0}, resizeInfo = null;
+  let dragTarget = null; // {type,index}
+  let simWindow = null; // {x,y,w,h,color,selected,title,menuBar:{ titles: [] }}
+  let buttons = []; // {relX,relY,w,h,color,label,selected}
+  let childWindows = []; // {relX,relY,w,h,color,title,selected}
+  let defaultWindowColor = '#6b695b', defaultButtonColor = '#cee70d';
+
+  // ---- UNIQUE NAME COUNTERS (only affecting menu-addition naming) ----
+  // Title counter (global)
+  let menuTitleCounter = 1;
+  // per-title item counters will be stored on each title object as title._itemCounter
+  // per-item submenu counters will be stored on each item object as item._subCounter
+
+  togglePlusInput.addEventListener('change', ()=> {
+    plusesEnabled = togglePlusInput.checked;
+    // when disabling pluses, clear add rect refs so they aren't clickable
+    if(!plusesEnabled){
+      if(simWindow) simWindow._addTitleRect = null;
+      (simWindow && simWindow.menuBar && simWindow.menuBar.titles || []).forEach(t => t._addItemRect = null);
+      (simWindow && simWindow.menuBar && simWindow.menuBar.titles || []).forEach(t => {
+        (t.items || []).forEach(it => it._addSubRect = null);
+      });
+    }
+  });
+
+  function append(s){ out.value += s + "\n"; out.scrollTop = out.scrollHeight; }
+  function mousePos(e){
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - r.left) * (canvas.width / r.width),
+      y: (e.clientY - r.top)  * (canvas.height / r.height),
+      px: e.clientX, py: e.clientY
+    };
+  }
+  function hexToRgb(hex){
+    hex = hex.replace('#','');
+    if(hex.length === 3) hex = hex.split('').map(c=>c+c).join('');
+    const n = parseInt(hex,16);
+    return [(n>>16)&255, (n>>8)&255, n&255];
+  }
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+  function pointInRect(px,py,r){ return px >= r.x && py >= r.y && px <= r.x + r.w && py <= r.y + r.h; }
+
+  function getButtonAbs(b){ return { x: (simWindow ? simWindow.x : 0) + b.relX, y: (simWindow ? simWindow.y : 0) + b.relY }; }
+  function getChildAbs(c){ return { x: (simWindow ? simWindow.x : 0) + c.relX, y: (simWindow ? simWindow.y : 0) + c.relY }; }
+
+  function detectEdgeForRect(px,py, rectX, rectY, w, h){
+    const x=rectX,y=rectY;
+    const left = px >= x - EDGE_T && px <= x + EDGE_T;
+    const right = px >= x + w - EDGE_T && px <= x + w + EDGE_T;
+    const top = py >= y - EDGE_T && py <= y + EDGE_T;
+    const bottom = py >= y + h - EDGE_T && py <= y + h + EDGE_T;
+    if(top && left) return 'nw';
+    if(top && right) return 'ne';
+    if(bottom && left) return 'sw';
+    if(bottom && right) return 'se';
+    if(top) return 'n';
+    if(bottom) return 's';
+    if(left) return 'w';
+    if(right) return 'e';
+    return null;
+  }
+  function cursorForDir(dir){
+    if(!dir) return 'default';
+    const map = { n:'n-resize', s:'s-resize', e:'e-resize', w:'w-resize', ne:'ne-resize', nw:'nw-resize', se:'se-resize', sw:'sw-resize' };
+    return map[dir] || 'default';
+  }
+
+  // ---- menu rendering + utilities ----
+  function renderMenuBar(){
+    if(!simWindow) return;
+    const mbY = simWindow.y + TITLE_BAR;
+    // left + to add title (only draw if plusesEnabled)
+    if(plusesEnabled){
+      const addRect = { x: simWindow.x + 6, y: mbY + 5, w:18, h:18 };
+      ctx.fillStyle = '#2a8'; ctx.fillRect(addRect.x, addRect.y, addRect.w, addRect.h);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.fillText('+', addRect.x + 5, addRect.y + 13);
+      simWindow._addTitleRect = addRect;
+    } else {
+      simWindow._addTitleRect = null;
+    }
+
+    // draw titles
+    let cursorX = simWindow._addTitleRect ? simWindow._addTitleRect.x + simWindow._addTitleRect.w + 12 : simWindow.x + 16;
+    ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif';
+    for(let t=0;t<simWindow.menuBar.titles.length;t++){
+      const title = simWindow.menuBar.titles[t];
+      const label = title.label || ('Menu' + (t+1));
+      ctx.fillStyle = '#fff';
+      ctx.fillText(label, cursorX, mbY + MENUBAR_HEIGHT/2);
+      const textW = ctx.measureText(label).width;
+      title._absX = cursorX; title._absW = textW;
+
+      // "+" above the title (only if plusesEnabled)
+      if(plusesEnabled){
+        const plusX = cursorX + textW/2 - 8;
+        let plusY = mbY - 18;
+        if(plusY < simWindow.y + 4) plusY = simWindow.y + 4;
+        ctx.fillStyle = '#2a8';
+        ctx.fillRect(plusX, plusY, 16, 12);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('+', plusX + 4, plusY + 9);
+        title._addItemRectF = { x: plusX, y: plusY, w:16, h:12 };
+      } 
+	  
+	  else {
+        title._addItemRect = null;
+      }
+
+      if(title.open){
+        const dropdownX = title._absX;
+        const dropdownY = mbY + MENUBAR_HEIGHT;
+        renderMenuItemsRecursive(title.items || [], dropdownX, dropdownY, 0, title);
+      }
+      cursorX += textW + 48;
+    }
+  }
+
+  function renderMenuItemsRecursive(items, baseX, baseY, level, titleRef){
+    if(!items) return;
+    const bgW = ITEM_W;
+    const totalH = Math.max(40, items.length * ITEM_H + 12);
+    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillRect(baseX, baseY, bgW, totalH);
+    ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif';
+    let y = baseY + 8;
+    for(let i=0;i<items.length;i++){
+      const item = items[i];
+      ctx.fillStyle = '#fff';
+      ctx.fillText(item.label || ('Item' + (i+1)), baseX + 8, y + 14);
+      item._abs = { x: baseX + 8, y: y, w: bgW - 36, h: ITEM_H - 6 };
+      
+      // small + to right of item to add submenu (only if plusesEnabled)
+      if(plusesEnabled){
+        const plusX = baseX + bgW - 28;
+        const plusY = y + 4;
+        ctx.fillStyle = '#2a8'; ctx.fillRect(plusX, plusY, 18, 16);
+        ctx.fillStyle = '#fff'; ctx.fillText('+', plusX + 5, plusY + 12);
+        item._addSubRectF = { x: plusX, y: plusY, w:18, h:16 };
+      } else {
+        item._addSubRect = null;
+      }
+      if(item.open && item.children && item.children.length){
+        const subBaseX = baseX + bgW + SUBMENU_OFFSET;
+        const subBaseY = y;
+        renderMenuItemsRecursive(item.children, subBaseX, subBaseY, level+1, titleRef);
+      }
+      y += ITEM_H;
+    }
+  }
+
+  function closeAllMenus(){
+    if(!simWindow || !simWindow.menuBar) return;
+    simWindow.menuBar.titles.forEach(t=>{
+      t.open = false;
+      if(t.items){
+        (function walk(items){
+          items.forEach(it=>{
+            it.open = false;
+            if(it.children) walk(it.children);
+          });
+        })(t.items);
+      }
+    });
+  }
+
+  function redraw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.save(); ctx.globalAlpha = 0.04; ctx.fillStyle = '#fff';
+    for(let x=0;x<canvas.width;x+=40) ctx.fillRect(x,0,1,canvas.height);
+    for(let y=0;y<canvas.height;y+=40) ctx.fillRect(0,y,canvas.width,1);
+    ctx.restore();
+
+    if(simWindow){
+      ctx.fillStyle = simWindow.color; ctx.fillRect(simWindow.x, simWindow.y, simWindow.w, simWindow.h);
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.strokeRect(simWindow.x, simWindow.y, simWindow.w, simWindow.h);
+      ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(simWindow.x, simWindow.y, simWindow.w, TITLE_BAR);
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif'; ctx.textBaseline = 'middle';
+      ctx.fillText(simWindow.title || 'Main Window', simWindow.x + 8, simWindow.y + TITLE_BAR/2);
+      if(simWindow.selected){ ctx.save(); ctx.strokeStyle = '#2a8'; ctx.setLineDash([6,4]); ctx.lineWidth = 2; ctx.strokeRect(simWindow.x-4, simWindow.y-4, simWindow.w+8, simWindow.h+8); ctx.restore(); }
+      ctx.fillStyle = 'rgba(255,255,255,0.04)'; ctx.fillRect(simWindow.x, simWindow.y + TITLE_BAR, simWindow.w, MENUBAR_HEIGHT);
+      renderMenuBar();
+    }
+
+    childWindows.forEach((c,i)=>{
+      if(!simWindow) return;
+      const abs = getChildAbs(c);
+      ctx.fillStyle = c.color; ctx.fillRect(abs.x, abs.y, c.w, c.h);
+      ctx.strokeStyle = '#111'; ctx.strokeRect(abs.x, abs.y, c.w, c.h);
+      ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(abs.x, abs.y, c.w, TITLE_BAR);
+      ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.fillText(c.title || ('Child'+(i+1)), abs.x + 6, abs.y + TITLE_BAR/2 + 1);
+      if(c.selected){ ctx.save(); ctx.strokeStyle = '#ffb86b'; ctx.setLineDash([4,3]); ctx.lineWidth = 2; ctx.strokeRect(abs.x-2, abs.y-2, c.w+4, c.h+4); ctx.restore(); }
+    });
+
+    buttons.forEach((b,i)=>{
+      if(!simWindow) return;
+      const abs = getButtonAbs(b);
+      ctx.fillStyle = b.color; ctx.fillRect(abs.x, abs.y, b.w, b.h);
+      ctx.strokeStyle = '#111'; ctx.strokeRect(abs.x, abs.y, b.w, b.h);
+      ctx.fillStyle = '#000'; ctx.font = '12px sans-serif'; ctx.fillText(b.label || ('qWidget' + (i+1)), abs.x + 6, abs.y + Math.min(18, b.h - 6));
+      if(b.selected){ ctx.save(); ctx.strokeStyle = '#2a8'; ctx.setLineDash([4,3]); ctx.lineWidth = 2; ctx.strokeRect(abs.x-3, abs.y-3, b.w+6, b.h+6); ctx.restore(); }
+    });
+
+    ctx.fillStyle = '#fff'; ctx.font = '12px sans-serif'; ctx.fillText('Mode: ' + mode + (resizing ? ' (resizing)' : ''), 8, canvas.height - 10);
+    requestAnimationFrame(redraw);
+  }
+  requestAnimationFrame(redraw);
+
+  // ---- UI actions ----
+  simWinBtn.addEventListener('click', ()=> setMode(mode === 'drawWindow' ? 'idle' : 'drawWindow'));
+  simBtnBtn.addEventListener('click', ()=> setMode(mode === 'drawButton' ? 'idle' : 'drawButton'));
+  function setMode(m){ mode = m; [simWinBtn, simBtnBtn].forEach(b=>b.classList.remove('active')); if(m==='drawWindow') simWinBtn.classList.add('active'); if(m==='drawButton') simBtnBtn.classList.add('active'); if(m!=='idle'){ if(simWindow) simWindow.selected=false; buttons.forEach(b=>b.selected=false); childWindows.forEach(c=>c.selected=false);} }
+
+  simColorBtn.addEventListener('click', ()=>{
+    colorPickerWin.value = simWindow ? simWindow.color : defaultWindowColor;
+    colorPickerWin.onchange = ()=>{ const c=colorPickerWin.value; if(simWindow && simWindow.selected) simWindow.color=c; else { defaultWindowColor=c; if(simWindow) simWindow.color=c; } append('Window color set to ' + c); };
+    colorPickerWin.click();
+  });
+  simBtnColorBtn.addEventListener('click', ()=>{
+    const sel = buttons.find(b=>b.selected);
+    colorPickerBtn.value = sel ? sel.color : defaultButtonColor;
+    colorPickerBtn.onchange = ()=>{ const c=colorPickerBtn.value; if(sel){ sel.color=c; append('Button color set to '+c); } else { defaultButtonColor=c; append('Default button color set to '+c); } };
+    colorPickerBtn.click();
+  });
+
+  addChildBtn.addEventListener('click', ()=>{
+    if(!simWindow){ append('Create/select a window first.'); return; }
+    const cw = { relX: Math.max(8, Math.round(simWindow.w/2 - 80)), relY: Math.max(TITLE_BAR+8, Math.round(simWindow.h/2 - 40)), w:160, h:100, color:'#e8e8e8', selected:false, title: 'Child' + (childWindows.length+1) };
+    childWindows.push(cw); append('Child window added.');
+  });
+
+  recordBtn.addEventListener('click', ()=>{
+    out.value = '';
+    if(!simWindow){ append('No window created.'); return; }
+    append('#Generated by basicRingQt_Designer'); 
+    append(
+    "#Date : " +
+    new Date().toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: '2-digit'
+    })
+);
+
+    append(
+    "#Time : " +
+    new Date().toLocaleTimeString('en-US', {
+        hour12: true,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    }).replace(/(.*) (\w+)/, '$1 $2').toLowerCase() + "\n"+ "\n"
+);
+
+    append('Load "guilib.ring" \n');
+    append('MyApp = New qApp {\n');
+    append('\t\twin1 = new qWidget() {');
+    append(`\t\tsetwindowtitle( "${simWindow.title}")`);
+    append(`\t\tsetGeometry(${Math.round(simWindow.x)},${Math.round(simWindow.y)},${Math.round(simWindow.w)},${Math.round(simWindow.h)})`);
+    append(`\t\twin1.setstylesheet("background-color: rgb( ${hexToRgb(simWindow.color).join(',') })")\n\n`);
+
+    append('#customize eg settext("Say Hello")');
+
+    append(`#title ${simWindow.title}`); 
+    append(`#pos x=${Math.round(simWindow.x)}, y=${Math.round(simWindow.y)} size wd=${Math.round(simWindow.w)}, ht=${Math.round(simWindow.h)}`); 
+    append(`#color ${hexToRgb(simWindow.color).join(',')}`);
+    append('#--- Menu Titles & Items ---');
+
+    Array.prototype.forOnlyFirstEntry = function(callback) { if (this.length > 0) callback(this[0], 0);};
+    Array.prototype.forSecondEntryOnwards = function(cb)   { for (let i = 1; i < this.length; i++) { cb(this[i], i);}};
+      Array.prototype.forLastEntry = function(callback) { const n = this.length; if (n === 0) return; callback(this[n - 1], n - 1); };
+	  
+
+
+
+
+    if(!simWindow.menuBar || simWindow.menuBar.titles.length===0) append('');
+    else {
+        
+        simWindow.menuBar.titles.forOnlyFirstEntry((t, ti)=>{
+              append(`menu1 = new qmenubar(win1) {\n\t\tsub${ti+1} = addmenu("${t.label}")`);
+			  
+              simWindow.menuBar.titles.forSecondEntryOnwards((t,ti) => {append(`\n\t\tsub${ti+1} = addmenu("${t.label}")`);});
+			  
+              simWindow.menuBar.titles.forLastEntry((t, ti) => {append(`  `);});
+
+         if(!t.items || t.items.length===0){ append(' } '); }
+        else {
+          function dump(items, indent){
+          
+            items.forOnlyFirstEntry((mi,miidx)=>{
+                    append(' '.repeat(indent) + `\tsub${miidx+1} {\n\t\toAction = new qAction(win1) { \n\t\tsettext("${mi.label}" )\n\t\t} `);
+             
+          
+              
+             if(mi.children && mi.children.length) dump(mi.children, indent+2);
+            });
+			
+			items.forSecondEntryOnwards((mi,miidx)=>{
+			        append(' '.repeat(indent) + `\n\t\taddaction(oAction) \n\t\toAction = new qAction(win1) {\n\t\t\tsettext("${mi.label}" )\n\t\t} `);
+			 
+		
+			  
+			 if(mi.children && mi.children.length) dump(mi.children, indent+2);
+            });
+            
+         
+            
+            items.forLastEntry((mi,miidx)=>{
+                    append(' '.repeat(indent) + `\n\t\taddaction(oAction) \n\t\t oAction = new qAction(win1) {\n\t\t\tsettext("${mi.label}" )\n\t\t}\n\t\t addaction(oAction)\n\t\t} \n\t\t\t}`);
+             
+          
+              
+             if(mi.children && mi.children.length) dump(mi.children, indent+2);
+            });
+            
+            
+          }
+          dump(t.items, 2);
+        }
+        
+        
+        
+      });
+    }
+    append(`/*KKK    #FOR  CUSTOMIZNG MENU BAR
+    sub1 {
+    oAction = new qAction(win1) {
+        settext("New")
+    }
+    addaction(oAction)
+    oAction = new qAction(win1) {
+        settext("Open")
+    }
+    addaction(oAction)
+    oAction = new qAction(win1) {
+        settext("Save")
+    }
+    sub4 = addmenu("Sub Menu")
+    sub4 {
+        oAction = new qAction(win1) {
+            settext("Website")
+        }
+        addaction(oAction)
+        oAction = new qAction(win1) {
+            settext("Forum")
+        }
+        addaction(oAction)
+        oAction = new qAction(win1) {
+            settext("Blog")
+        }
+        addaction(oAction)
+    }
+    addaction(oAction)
+    addseparator()
+    oAction = new qaction(win1) {
+        settext("Exit")
+        setclickevent("myapp.quit()")
+    }
+    addaction(oAction)
+}
+
+    KKKK*/`);
+if(buttons.length===0) append('#(no buttons)\n');
+    buttons.forEach((b,i)=> 
+
+        append(`${b.label}= new qlabel(win1) {
+                        setGeometry(${Math.round(b.relX)},${Math.round(b.relY)},${Math.round(b.w)},${Math.round(b.h)})
+                        setstylesheet("background-color: rgb(${hexToRgb(b.color).join(',')});")\n\t\t\tsetText("${b.label}")} \n\t\t\t#Customise qAOB to your liking eg change qLabel to qLineEdit\n\t\t\t#Customise qAOB to your liking eg change qLabel to qVBoxLayout\n\t\t\t#Customise qAOB to your liking eg change qLabel to etc\n\n`)); 
+    
+    
+    append('#--- Child Windows ---'); if(childWindows.length===0) append('#(no child windows)\n\n');
+    childWindows.forEach((c,i)=> 
+    
+    append(`new qpushbutton(win1) { \n\t\t\tsetgeometry(${Math.round(c.relX)},${Math.round(c.relY)},100,30)\n\t\t\t settext("get${c.title}") \n\t\t\tsetclickevent("get${c.title}()")\n\t\t\t}`));
+    
+    append('\t\t\t\tshow()');
+    append('\t\t\t}');
+    append('\t\texec()');
+    append('\t}\n\n');
+    
+    if(childWindows.length===0) append('#(no child windows)\n\n');
+    childWindows.forEach((c,i)=> 
+    
+    append(`func get${c.title} \n\twin2 = new qwidget() {\n\tsetwindowtitle("${c.title}") \n\tsetgeometry(${Math.round(c.relX)},${Math.round(c.relY)},520,320)\n\t show() \n} `));
+    
+    append('#func pIncrease');
+    append('\t\t#mySomething');
+    
+    
+    append('#End\n\n\n');
+    append('# End of the Generated Source Code File...');
+  });
+
+  // ---- menu hit-testing and helpers ----
+  function findMenuElementAt(px,py){
+    if(!simWindow || !simWindow.menuBar) return null;
+    // addTitle only if plusesEnabled
+    if(plusesEnabled && simWindow._addTitleRect && pointInRect(px,py,simWindow._addTitleRect)) return { kind:'addTitle', rect:simWindow._addTitleRect };
+    for(let ti=0; ti<simWindow.menuBar.titles.length; ti++){
+      const t = simWindow.menuBar.titles[ti];
+      if(t._absX && t._absW && pointInRect(px,py,{x:t._absX,y:simWindow.y + TITLE_BAR,w:t._absW,h:MENUBAR_HEIGHT})) return { kind:'title', titleIndex:ti, titleRef:t, rect:{x:t._absX,y:simWindow.y + TITLE_BAR,w:t._absW,h:MENUBAR_HEIGHT} };
+      // addItem only if plusesEnabled
+      if(plusesEnabled && t._addItemRect && pointInRect(px,py,t._addItemRect)) return { kind:'addItem', titleIndex:ti, titleRef:t, rect:t._addItemRect };
+      if(t.open && t.items){
+        const found = findInItems(px,py, t.items, { titleIndex:ti, path:[], baseX: t._absX, baseY: simWindow.y + TITLE_BAR + MENUBAR_HEIGHT });
+        if(found) return found;
+      }
+    }
+    return null;
+  }
+
+  function findInItems(px,py, items, ctxInfo){
+    const baseX = ctxInfo.baseX;
+    let y = ctxInfo.baseY + 8;
+    for(let i=0;i<items.length;i++){
+      const item = items[i];
+      if(item._abs && pointInRect(px,py,item._abs)) return { kind:'item', titleIndex:ctxInfo.titleIndex, itemPath:[...ctxInfo.path,i], itemRef:item, rect:item._abs };
+      // addSub only if plusesEnabled
+      if(plusesEnabled && item._addSubRect && pointInRect(px,py,item._addSubRect)) return { kind:'addSub', titleIndex:ctxInfo.titleIndex, itemPath:[...ctxInfo.path,i], itemRef:item, rect:item._addSubRect };
+      if(item.open && item.children && item.children.length){
+        const subBaseX = item._abs.x + ITEM_W + SUBMENU_OFFSET - 8;
+        const found = findInItems(px,py, item.children, { titleIndex: ctxInfo.titleIndex, path:[...ctxInfo.path,i], baseX: subBaseX, baseY: item._abs.y });
+        if(found) return found;
+      }
+      y += ITEM_H;
+    }
+    return null;
+  }
+
+  function getItemByPath(titleIndex, path){
+    if(!simWindow) return [];
+    let arr = simWindow.menuBar.titles[titleIndex].items;
+    if(!path || path.length===0) return arr || [];
+    for(let i=0;i<path.length;i++){
+      const idx = path[i];
+      if(!arr || !arr[idx]) return [];
+      if(i === path.length - 1) return arr[idx].children = arr[idx].children || [];
+      arr = arr[idx].children = arr[idx].children || [];
+    }
+    return arr;
+  }
+
+  function removeItemByPath(titleIndex, path){
+    if(!simWindow) return;
+    if(!path || path.length===0) return;
+    let arr = simWindow.menuBar.titles[titleIndex].items;
+    for(let i=0;i<path.length-1;i++){ arr = arr[path[i]] && arr[path[i]].children; if(!arr) return; }
+    arr.splice(path[path.length-1],1);
+  }
+
+  function openPath(titleIndex, path){
+    const t = simWindow.menuBar.titles[titleIndex];
+    if(!t) return;
+    t.open = true;
+    let arr = t.items;
+    for(let i=0;i<path.length;i++){
+      const idx = path[i];
+      if(!arr || !arr[idx]) return;
+      arr[idx].open = true;
+      arr = arr[idx].children = arr[idx].children || [];
+    }
+  }
+
+  // ---- mouse events ----
+  canvas.addEventListener('mousemove', (e)=>{
+    const p = mousePos(e);
+    if(resizing && resizeInfo){ handleResizing(p); canvas.style.cursor = cursorForDir(resizeInfo.dir); showTooltip(e,'Resizing'); return; }
+    if(drawing){ handleDrawingMove(p); showTooltip(e,'Drawing'); return; }
+    if(dragging){ handleDraggingMove(p); showTooltip(e,'Dragging'); return; }
+
+    hideTooltip();
+    const menuHit = findMenuElementAt(p.x,p.y);
+    if(menuHit){
+      switch(menuHit.kind){
+        case 'addTitle': canvas.style.cursor='pointer'; showTooltip(e, plusesEnabled ? 'Add Menu Title' : 'Pluses disabled'); return;
+        case 'title': canvas.style.cursor='pointer'; showTooltip(e, 'Click to open/close. Double-click to edit title'); return;
+        case 'addItem': canvas.style.cursor='pointer'; showTooltip(e, plusesEnabled ? 'Add Menu Item above the title (visible immediately)' : 'Pluses disabled'); return;
+        case 'item': canvas.style.cursor='pointer'; showTooltip(e, 'Click to toggle submenu. Double-click to edit item label'); return;
+        case 'addSub': canvas.style.cursor='pointer'; showTooltip(e, plusesEnabled ? 'Add submenu item to this item' : 'Pluses disabled'); return;
+      }
+    }
+
+    for(let i=childWindows.length-1;i>=0;i--){
+      const c = childWindows[i], abs = getChildAbs(c);
+      const dir = detectEdgeForRect(p.x,p.y,abs.x,abs.y,c.w,c.h);
+      if(dir){ canvas.style.cursor = cursorForDir(dir); showTooltip(e,'Resize child window'); return; }
+      if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:c.w,h:TITLE_BAR})){ canvas.style.cursor='move'; showTooltip(e,'Drag or double-click to edit child title'); return; }
+      if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:c.w,h:c.h})){ canvas.style.cursor='move'; showTooltip(e,'Drag child window'); return; }
+    }
+
+    for(let i=buttons.length-1;i>=0;i--){
+      const b=buttons[i], abs=getButtonAbs(b);
+      const dir = detectEdgeForRect(p.x,p.y,abs.x,abs.y,b.w,b.h);
+      if(dir){ canvas.style.cursor = cursorForDir(dir); showTooltip(e,'Resize button'); return; }
+      if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:b.w,h:b.h})){ canvas.style.cursor='move'; showTooltip(e,'Drag or double-click to edit label'); return; }
+    }
+
+    if(simWindow){
+      const dir = detectEdgeForRect(p.x,p.y, simWindow.x, simWindow.y, simWindow.w, simWindow.h);
+      if(dir){ canvas.style.cursor = cursorForDir(dir); showTooltip(e,'Resize window'); return; }
+      if(pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y,w:simWindow.w,h:TITLE_BAR})){ canvas.style.cursor='move'; showTooltip(e,'Drag title or double-click to edit window title'); return; }
+      if(pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y + TITLE_BAR, w: simWindow.w, h: simWindow.h - TITLE_BAR})){ canvas.style.cursor='move'; showTooltip(e,'Drag window'); return; }
+    }
+    canvas.style.cursor='default';
+  });
+
+  canvas.addEventListener('mousedown', (e)=>{
+    const p = mousePos(e);
+
+    // add title (only if plusesEnabled)
+    if(plusesEnabled && simWindow && simWindow._addTitleRect && pointInRect(p.x,p.y,simWindow._addTitleRect)){
+      // Use a global unique counter for titles
+      const titleLabel = 'Title' + (menuTitleCounter++);
+      const newTitle = { label: titleLabel, items:[], open:false };
+      // initialize per-title item counter
+      newTitle._itemCounter = 1;
+      simWindow.menuBar.titles.push(newTitle);
+      append('Menu title added: ' + titleLabel);
+      return;
+    }
+
+    const menuHit = findMenuElementAt(p.x,p.y);
+    if(menuHit){
+      if(menuHit.kind === 'title'){
+        const t = simWindow.menuBar.titles[menuHit.titleIndex];
+        t.open = !t.open;
+        simWindow.menuBar.titles.forEach((ot,idx)=>{ if(idx!==menuHit.titleIndex) ot.open=false; });
+        return;
+      }
+      if(menuHit.kind === 'addItem' && plusesEnabled){
+        const t = simWindow.menuBar.titles[menuHit.titleIndex];
+        t.items = t.items || [];
+        // create unique item name using per-title counter
+        t._itemCounter = t._itemCounter || 1;
+        const newLabel = `${t.label}_Item${t._itemCounter++}`;
+        const newItem = { label: newLabel, children: [], open:false };
+        // init its sub-counter
+        newItem._subCounter = 1;
+        t.items.push(newItem);
+        t.open = true; // ensure dropdown visible in real time
+        append(`MenuItem added under ${t.label}: ${newLabel}`);
+        return;
+      }
+      if(menuHit.kind === 'addSub' && plusesEnabled){
+        // menuHit.itemPath points to the item that has the + (add-sub) button
+        // parent array (the collection that contains the item) is found by getItemByPath with slice(0,-1)
+        const parentArr = getItemByPath(menuHit.titleIndex, menuHit.itemPath.slice(0,-1));
+        const itemIndex = menuHit.itemPath[menuHit.itemPath.length-1];
+        const item = parentArr[itemIndex];
+        item.children = item.children || [];
+        // create unique sub label using per-item counter and include its parent label for clarity
+        item._subCounter = item._subCounter || 1;
+        const subLabel = `${item.label}_Sub${item._subCounter++}`;
+        const newSub = { label: subLabel, children: [], open:false };
+        // init nested sub-counter
+        newSub._subCounter = 1;
+        item.children.push(newSub);
+        append(`Submenu added under ${item.label}: ${subLabel}`);
+        openPath(menuHit.titleIndex, menuHit.itemPath);
+        return;
+      }
+      if(menuHit.kind === 'item'){
+        menuHit.itemRef.open = !menuHit.itemRef.open;
+        return;
+      }
+    }
+
+    // child windows edges
+    for(let i=childWindows.length-1;i>=0;i--){
+      const c = childWindows[i]; const abs = getChildAbs(c);
+      const dir = detectEdgeForRect(p.x,p.y, abs.x, abs.y, c.w, c.h);
+      if(dir){ resizing=true; resizeInfo={targetType:'child', index:i, dir, startMouse:{x:p.x,y:p.y}, startRect:{ relX:c.relX, relY:c.relY, w:c.w, h:c.h } }; return; }
+    }
+    // button edges
+    for(let i=buttons.length-1;i>=0;i--){
+      const b = buttons[i]; const abs=getButtonAbs(b);
+      const dir = detectEdgeForRect(p.x,p.y, abs.x, abs.y, b.w, b.h);
+      if(dir){ resizing=true; resizeInfo={targetType:'button', index:i, dir, startMouse:{x:p.x,y:p.y}, startRect:{ relX:b.relX, relY:b.relY, w:b.w, h:b.h } }; return; }
+    }
+    // window edges
+    if(simWindow){
+      const dir = detectEdgeForRect(p.x,p.y, simWindow.x, simWindow.y, simWindow.w, simWindow.h);
+      if(dir){ resizing=true; resizeInfo={targetType:'window', dir, startMouse:{x:p.x,y:p.y}, startRect:{ x:simWindow.x, y:simWindow.y, w:simWindow.w, h:simWindow.h } }; return; }
+    }
+
+    // draw modes
+    if(mode === 'drawWindow'){ drawing=true; startAbs=p; simWindow = { x:p.x, y:p.y, w:0, h:0, color: defaultWindowColor, selected:true, title:'Main Window', menuBar:{ titles: [] } }; buttons=[]; childWindows=[]; return; }
+    if(mode === 'drawButton'){ if(!simWindow || !(p.x>=simWindow.x && p.x<=simWindow.x+simWindow.w && p.y>=simWindow.y && p.y<=simWindow.y+simWindow.h)){ append('Click inside window to draw a button'); return; } drawing=true; startAbs=p; const relX=clamp(p.x - simWindow.x,6,simWindow.w-12); const relY=clamp(p.y - simWindow.y,TITLE_BAR+6,simWindow.h-12); const b={relX,relY,w:0,h:0,color:defaultButtonColor,label:'qWidget'+(buttons.length+1),selected:true}; buttons.push(b); buttons.forEach(btn=>btn.selected=false); b.selected=true; return; }
+
+    // selection & dragging top-down
+    for(let i=buttons.length-1;i>=0;i--){
+      const b=buttons[i], abs=getButtonAbs(b); if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:b.w,h:b.h})){ buttons.forEach(btn=>btn.selected=false); b.selected=true; childWindows.forEach(ch=>ch.selected=false); if(simWindow) simWindow.selected=false; dragging=true; dragTarget={type:'button',index:i}; dragOffset.x=p.x-abs.x; dragOffset.y=p.y-abs.y; return; }
+    }
+    for(let i=childWindows.length-1;i>=0;i--){
+      const c=childWindows[i], abs=getChildAbs(c); if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:c.w,h:TITLE_BAR})){ childWindows.forEach(ch=>ch.selected=false); c.selected=true; buttons.forEach(btn=>btn.selected=false); if(simWindow) simWindow.selected=false; dragging=true; dragTarget={type:'child',index:i}; dragOffset.x=p.x-abs.x; dragOffset.y=p.y-abs.y; return; }
+    }
+    // click main window area -> drag
+    if(simWindow && pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y,w:simWindow.w,h:simWindow.h})){ simWindow.selected=true; buttons.forEach(b=>b.selected=false); childWindows.forEach(c=>c.selected=false); dragging=true; dragTarget={type:'window'}; dragOffset.x=p.x - simWindow.x; dragOffset.y=p.y - simWindow.y; return; }
+
+    if(simWindow) simWindow.selected=false; buttons.forEach(b=>b.selected=false); childWindows.forEach(c=>c.selected=false);
+  });
+
+  // double-click: edit labels OR collapse everything when dblclick into empty window area
+  canvas.addEventListener('dblclick', (e)=>{
+    const p = mousePos(e);
+    // child title edit
+    for(let i=childWindows.length-1;i>=0;i--){
+      const c = childWindows[i], abs=getChildAbs(c);
+      if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:c.w,h:TITLE_BAR})){ openEditorAt(abs.x+6, abs.y+4, c.title, (txt)=>{ c.title = txt || c.title; }); return; }
+    }
+    // button label edit
+    for(let i=buttons.length-1;i>=0;i--){
+      const b = buttons[i], abs=getButtonAbs(b);
+      if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:b.w,h:b.h})){ openEditorAt(abs.x+6, abs.y+4, b.label, (txt)=>{ b.label = txt || b.label; }); return; }
+    }
+    // menu edit
+    const mh = findMenuElementAt(p.x,p.y);
+    if(mh){
+      if(mh.kind==='title'){ const t=simWindow.menuBar.titles[mh.titleIndex]; openEditorAt(mh.rect.x, mh.rect.y, t.label, (txt)=>{ t.label = txt || t.label; }); return; }
+      if(mh.kind==='item'){ openEditorAt(mh.rect.x, mh.rect.y, mh.itemRef.label, (txt)=>{ mh.itemRef.label = txt || mh.itemRef.label; }); return; }
+    }
+
+    // NEW: double-click on the title bar edits the main window name
+    if(simWindow && pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y,w:simWindow.w,h:TITLE_BAR})){
+      openEditorAt(simWindow.x + 8, simWindow.y + 6, simWindow.title, (txt)=>{ simWindow.title = txt || simWindow.title; });
+      return;
+    }
+
+    // if dblclick on main window area but NOT on an interactive menu/button/child => collapse all menus
+    if(simWindow && pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y,w:simWindow.w,h:simWindow.h})){
+      closeAllMenus();
+      append('All menus collapsed.');
+      return;
+    }
+  });
+
+  // right-click delete
+  canvas.addEventListener('contextmenu', (e)=>{
+    e.preventDefault();
+    const p = mousePos(e);
+    for(let i=buttons.length-1;i>=0;i--){ const b=buttons[i], abs=getButtonAbs(b); if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:b.w,h:b.h})){ if(confirm('Delete button "'+b.label+'"?')){ buttons.splice(i,1); append('Button deleted'); } return; } }
+    for(let i=childWindows.length-1;i>=0;i--){ const c=childWindows[i], abs=getChildAbs(c); if(pointInRect(p.x,p.y,{x:abs.x,y:abs.y,w:c.w,h:c.h})){ if(confirm('Delete child "'+c.title+'"?')){ childWindows.splice(i,1); append('Child deleted'); } return; } }
+    const mh = findMenuElementAt(p.x,p.y);
+    if(mh){
+      if(mh.kind==='title'){ if(confirm('Delete menu title "'+simWindow.menuBar.titles[mh.titleIndex].label+'"?')){ simWindow.menuBar.titles.splice(mh.titleIndex,1); append('Menu title deleted'); } return; }
+      if(mh.kind==='item' || mh.kind==='addSub'){ if(confirm('Delete menu item "'+mh.itemRef.label+'"?')){ removeItemByPath(mh.titleIndex, mh.itemPath); append('Menu item deleted'); } return; }
+    }
+    if(simWindow && pointInRect(p.x,p.y,{x:simWindow.x,y:simWindow.y,w:simWindow.w,h:simWindow.h})){ if(confirm('Delete main window "'+simWindow.title+'"?')){ simWindow=null; buttons=[]; childWindows=[]; append('Main window deleted'); } return; }
+  });
+
+  function handleDrawingMove(p){
+    if(!drawing) return;
+    if(mode === 'drawWindow' && simWindow){
+      const x = Math.min(startAbs.x, p.x), y = Math.min(startAbs.y, p.y), w = Math.abs(p.x - startAbs.x), h = Math.abs(p.y - startAbs.y);
+      simWindow.x = clamp(x,0,canvas.width-w); simWindow.y = clamp(y,0,canvas.height-h); simWindow.w = Math.max(MIN_WH,w); simWindow.h = Math.max(MIN_WH,h);
+    }
+    if(mode === 'drawButton' && buttons.length && simWindow){
+      const b = buttons[buttons.length-1];
+      const absX = Math.min(startAbs.x, p.x), absY = Math.min(startAbs.y, p.y);
+      let relX = absX - simWindow.x, relY = absY - simWindow.y;
+      relY = Math.max(relY, TITLE_BAR); relX = clamp(relX,0,simWindow.w); relY = clamp(relY,TITLE_BAR,simWindow.h);
+      let w = Math.abs(p.x - startAbs.x), h = Math.abs(p.y - startAbs.y);
+      w = Math.min(w, simWindow.w - relX); h = Math.min(h, simWindow.h - relY);
+      b.relX = relX; b.relY = relY; b.w = Math.max(12,w); b.h = Math.max(12,h);
+    }
+  }
+
+  function handleDraggingMove(p){
+    if(!dragging || !dragTarget) return;
+    if(dragTarget.type==='button'){ const b = buttons[dragTarget.index]; const newAbsX = p.x - dragOffset.x, newAbsY = p.y - dragOffset.y; let newRelX = newAbsX - simWindow.x, newRelY = newAbsY - simWindow.y; newRelX = clamp(newRelX,0,Math.max(0,simWindow.w - b.w)); newRelY = clamp(newRelY,TITLE_BAR,Math.max(TITLE_BAR, simWindow.h - b.h)); b.relX=newRelX; b.relY=newRelY; return; }
+    if(dragTarget.type==='child'){ const c = childWindows[dragTarget.index]; const newAbsX = p.x - dragOffset.x, newAbsY = p.y - dragOffset.y; let newRelX = newAbsX - simWindow.x, newRelY = newAbsY - simWindow.y; newRelX = clamp(newRelX,0,Math.max(0,simWindow.w - c.w)); newRelY = clamp(newRelY,TITLE_BAR,Math.max(TITLE_BAR, simWindow.h - c.h)); c.relX=newRelX; c.relY=newRelY; return; }
+    if(dragTarget.type==='window'){ simWindow.x = clamp(p.x - dragOffset.x,0,canvas.width - simWindow.w); simWindow.y = clamp(p.y - dragOffset.y,0,canvas.height - simWindow.h); buttons.forEach(b=>{ b.relX = clamp(b.relX,0,Math.max(0,simWindow.w - b.w)); b.relY = clamp(b.relY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - b.h)); }); childWindows.forEach(c=>{ c.relX = clamp(c.relX,0,Math.max(0,simWindow.w - c.w)); c.relY = clamp(c.relY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - c.h)); }); return; }
+  }
+
+  function handleResizing(p){
+    if(!resizing || !resizeInfo) return;
+    const dx = p.x - resizeInfo.startMouse.x, dy = p.y - resizeInfo.startMouse.y, dir = resizeInfo.dir;
+    if(resizeInfo.targetType === 'window'){
+      const s = resizeInfo.startRect; let nx = s.x, ny = s.y, nw = s.w, nh = s.h;
+      if(dir.includes('e')) nw = Math.max(MIN_WH, s.w + dx);
+      if(dir.includes('s')) nh = Math.max(MIN_WH, s.h + dy);
+      if(dir.includes('w')) { nx = s.x + dx; nw = Math.max(MIN_WH, s.w - dx); }
+      if(dir.includes('n')) { ny = s.y + dy; nh = Math.max(MIN_WH, s.h - dy); }
+      if(nx < 0){ nw += nx; nx = 0; } if(ny < 0){ nh += ny; ny = 0; } if(nx + nw > canvas.width) nw = canvas.width - nx; if(ny + nh > canvas.height) nh = canvas.height - ny;
+      simWindow.x = nx; simWindow.y = ny; simWindow.w = Math.max(MIN_WH, nw); simWindow.h = Math.max(MIN_WH, nh);
+      buttons.forEach(b=>{ b.relX = clamp(b.relX,0,Math.max(0,simWindow.w - b.w)); b.relY = clamp(b.relY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - b.h)); });
+      childWindows.forEach(c=>{ c.relX = clamp(c.relX,0,Math.max(0,simWindow.w - c.w)); c.relY = clamp(c.relY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - c.h)); });
+      return;
+    }
+    if(resizeInfo.targetType === 'button'){
+      const idx = resizeInfo.index; const b = buttons[idx]; const s = resizeInfo.startRect;
+      let nRelX = s.relX, nRelY = s.relY, nw = s.w, nh = s.h;
+      if(dir.includes('e')) nw = Math.max(12, s.w + dx);
+      if(dir.includes('s')) nh = Math.max(12, s.h + dy);
+      if(dir.includes('w')) { nRelX = s.relX + dx; nw = Math.max(12, s.w - dx); }
+      if(dir.includes('n')) { nRelY = s.relY + dy; nh = Math.max(12, s.h - dy); }
+      nRelX = clamp(nRelX,0,Math.max(0,simWindow.w - nw)); nRelY = clamp(nRelY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - nh));
+      nw = clamp(nw,12,simWindow.w - nRelX); nh = clamp(nh,12,simWindow.h - nRelY);
+      b.relX=nRelX; b.relY=nRelY; b.w=nw; b.h=nh; return;
+    }
+    if(resizeInfo.targetType === 'child'){
+      const idx = resizeInfo.index; const c = childWindows[idx]; const s = resizeInfo.startRect;
+      let nRelX = s.relX, nRelY = s.relY, nw = s.w, nh = s.h;
+      if(dir.includes('e')) nw = Math.max(20, s.w + dx);
+      if(dir.includes('s')) nh = Math.max(20, s.h + dy);
+      if(dir.includes('w')) { nRelX = s.relX + dx; nw = Math.max(20, s.w - dx); }
+      if(dir.includes('n')) { nRelY = s.relY + dy; nh = Math.max(20, s.h - dy); }
+      nRelX = clamp(nRelX,0,Math.max(0,simWindow.w - nw)); nRelY = clamp(nRelY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - nh));
+      nw = clamp(nw,20,simWindow.w - nRelX); nh = clamp(nh,20,simWindow.h - nRelY);
+      c.relX=nRelX; c.relY=nRelY; c.w=nw; c.h=nh; return;
+    }
+  }
+
+  window.addEventListener('mouseup', ()=>{ if(drawing){ drawing=false; if(mode==='drawWindow'){ if(simWindow){ simWindow.w=Math.max(120,simWindow.w); simWindow.h=Math.max(80,simWindow.h); simWindow.selected=true; simWindow.menuBar = simWindow.menuBar||{titles:[]}; setMode('idle'); } } if(mode==='drawButton'){ const b=buttons[buttons.length-1]; if(b){ b.w=Math.max(24,b.w); b.h=Math.max(18,b.h); b.relX=clamp(b.relX,0,Math.max(0,simWindow.w - b.w)); b.relY=clamp(b.relY,TITLE_BAR,Math.max(TITLE_BAR,simWindow.h - b.h)); } setMode('idle'); } } dragging=false; resizing=false; resizeInfo=null; dragTarget=null; });
+
+  function openEditorAt(canvasX, canvasY, currentText, onCommit){
+    const rect = canvas.getBoundingClientRect();
+    const pageX = rect.left + (canvasX / canvas.width) * rect.width;
+    const pageY = rect.top + (canvasY / canvas.height) * rect.height;
+    const input = document.createElement('input'); input.className='canvas-edit'; input.value = currentText || '';
+    input.style.left = pageX + 'px'; input.style.top = pageY + 'px'; input.style.minWidth='80px'; document.body.appendChild(input); input.focus(); input.select();
+    function commit(){ onCommit(input.value.trim()); input.remove(); }
+    function cancel(){ input.remove(); }
+    input.addEventListener('blur', commit, { once:true }); input.addEventListener('keydown', ev=>{ if(ev.key==='Enter') commit(); else if(ev.key==='Escape') cancel(); });
+  }
+
+  // helper functions used above are hoisted (findMenuElementAt, findInItems, getItemByPath, removeItemByPath, openPath)
+
+  function showTooltip(e, text){ tooltip.style.display='block'; tooltip.textContent = text; const gap=12; tooltip.style.left = (e.clientX + gap) + 'px'; tooltip.style.top = (e.clientY + gap) + 'px'; }
+  function hideTooltip(){ tooltip.style.display='none'; }
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'Escape'){ setMode('idle'); drawing=dragging=resizing=false; resizeInfo=null; dragTarget=null; closeAllMenus(); }
+    if(e.key === 'Delete' || e.key === 'Backspace'){
+      const bidx = buttons.findIndex(b=>b.selected);
+      if(bidx !== -1){ if(confirm('Delete ' + buttons[bidx].label + '?')){ buttons.splice(bidx,1); append('Button deleted'); } return; }
+      const cidx = childWindows.findIndex(c=>c.selected);
+      if(cidx !== -1){ if(confirm('Delete ' + childWindows[cidx].title + '?')){ childWindows.splice(cidx,1); append('Child deleted'); } return; }
+      if(simWindow && simWindow.selected){ if(confirm('Delete main window?')){ simWindow=null; buttons=[]; childWindows=[]; append('Main window deleted'); } }
+    }
+  });
+
+  append('Ready. Use the "Show + buttons" checkbox (checked by default) to toggle all + add-buttons on/off. Double-click the main window title bar to rename it; double-click empty window area to collapse menus.');
+  simWindow = { x: 60, y: 40, w: 520, h: 320, color: '#747058', selected: false, title: 'Main Window', menuBar:{ titles: [] } };
+
+})();
+
+function copyText() {
+    var textArea = document.getElementById("out");
+    textArea.select();                 // highlight text
+    textArea.setSelectionRange(0, 99999); // for mobile compatibility
+    document.execCommand("copy");      // copy to clipboard
+}
+
+</script>
+</body>
+<a href="https://info.flagcounter.com/ZPs3"><img src="https://s01.flagcounter.com/count2/ZPs3/bg_FFFFFF/txt_000000/border_CCCCCC/columns_2/maxflags_10/viewers_0/labels_0/pageviews_0/flags_0/percent_0/" alt="Flag Counter" border="0"></a>
+</html>
