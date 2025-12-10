@@ -20,7 +20,7 @@
 
 ### Quick Start
 
-GENERATE RING CODE [HERE](VVVVV) — no dependencies required!
+GENERATE RING CODE [HERE](https://timk6.github.io/basicRingQt_Designer/) — no dependencies required!
 
 
 
