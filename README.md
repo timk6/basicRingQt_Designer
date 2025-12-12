@@ -2,9 +2,19 @@
 
 # basicRingQt_Designer
 
-**Quickly generate RingQt Code**
+**Quickly generate starting Ring Code**
 
-[HTML]: https://img.shields.io/badge/Made_with_for-Ring-2D54CB?style=for-the-badge
+[ring]: https://img.shields.io/badge/Made_for-Ring-2D54CB?style=for-the-badge
+[ring]: https://img.shields.io/badge/Made_with-Ring-2D54CB?style=for-the-badge
+[license]: https://img.shields.io/github/license/ysdragon/im2ansi?style=for-the-badge&logo=opensourcehardware&label=License&logoColor=C0CAF5&labelColor=414868&color=8c73cc
+
+[release]: https://img.shields.io/github/v/release/ysdragon/im2ansi?style=for-the-badge&logo=github&logoColor=C0CAF5&labelColor=414868&color=8c73cc
+
+[![][ring]](https://ring-lang.net/)
+
+## demo
+
+![UI demo](/mine3.gif?raw=true)
 
 </div>
 
